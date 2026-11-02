@@ -10,7 +10,25 @@
 ### Running the suite
 
 
-## Detailed description
+## TD-DIP
+
+In the table below is a brief review of DIP in medical image reconstruction. Publications on denoising are omitted from the list on purpose.
+
+| Method                 | Modality |       Network architecture        | Temporal features | Dimensionality |
+| ---------------------- | :------: | :-------------------------------: | :---------------: | :------------: |
+|   Our implementation   |  SPECT   | FCNN + decoder (multi-resolution) | Latent coordinate |       3D       |
+|    Yoo *et al.* [1]    |   MRI    |          FCNN + decoder           | Latent coordinate |       2D       |
+|    Wu *et al.* [2]     |  SPECT   |  Multiple U-net, multiple FCNN    |       INR         |       2D       |
+|    Hori *et al.* [3]   |  SPECT   |              U-net                |       None        |       2D       |
+| Hashimoto *et al.* [4] |   PET    |              U-net                |       None        |       3D       |
+
+
+## ECG gating schemes
+### Conventional "static" gating
+### Cycle-resolved "dynamic" gating
+
+
+## Dataset
 ### XCAT phantom
 The XCAT numerical phantom was used to generate activity and attenuation volumes for one cardiac cycle of one second, sampled at 256 equally spaced cardiac phases. The phantom includes a beating heart with a fixed tracer distribution; respiratory motion and changes in tracer uptake are not simulated. Each volume has a matrix size of 256 × 256 × 306 voxels and an isotropic voxel size of 2.46 mm. The 752.76 mm axial coverage extends approximately 25% beyond each end of the 500 mm detector head.
 
@@ -23,18 +41,12 @@ The camera model uses a physical crystal measuring 500 mm axially and 400 mm tra
 
 Three energy windows are saved: a 126.45–154.55 keV photopeak window, a 119.425–126.45 keV lower scatter window, and a 154.55–161.575 keV upper scatter window. In the study's subsequent processing, the two side windows are used for triple-energy-window scatter estimation, with the estimate calculated as twice their sum.
 
-### ECG gating schemes
-#### Conventional "static" gating
-#### Cycle-resolved "dynamic" gating
-
-### Reconstructions
-#### OSEM
-#### BSREM + NLM
-#### TD-DIP
-
-### Plotting the metrics
-
 
 ## References
+[1] Yoo, Jaejun, Kyong Hwan Jin, Harshit Gupta, Jerome Yerly, Matthias Stuber, and Michael Unser. 2021. “Time-Dependent Deep Image Prior for Dynamic MRI.” IEEE Transactions on Medical Imaging 40 (12): 3337–48. https://doi.org/10.1109/tmi.2021.3084288.
 
+[2] Wu, Yicheng, Roy Y. He, Qiaoqiao Ding, Xiaoqun Zhang, and Chao Wang. 2026. ‘Robust Dynamic SPECT Reconstruction with Scarce Angular and Limited Temporal Sampling’. Journal of Mathematical Imaging and Vision 68 (3). https://doi.org/10.1007/s10851-026-01302-z.
 
+[3] Hori, Kensuke, Fumio Hashimoto, Kazuya Koyama, and Takeyuki Hashimoto. 2025. “Limited-Angle SPECT Image Reconstruction Using Deep Image Prior.” Physics in Medicine & Biology 70 (14): 145005. https://doi.org/10.1088/1361-6560/adea09.
+
+[4] Hashimoto, Fumio, Yuya Onishi, Kibo Ote, Hideaki Tashima, and Taiga Yamaya. 2023. “Fully 3D Implementation of the End-to-End Deep Image Prior-Based PET Image Reconstruction Using Block Iterative Algorithm.” Physics in Medicine & Biology 68 (15): 155009. https://doi.org/10.1088/1361-6560/ace49c.
