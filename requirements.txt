@@ -1,0 +1,8 @@
+# Python 3.12; NVIDIA CUDA 12. Install a compatible PyTorch build first.
+numpy==2.2.3
+scipy==1.15.2
+h5py==3.14.0
+matplotlib==3.10.0
+scikit-image==0.25.2
+torch==2.7.1
+cupy-cuda12x==13.4.1

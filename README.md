@@ -1,13 +1,22 @@
 # Time-dependent deep image prior for cardiac SPECT reconstruction
 
 ## Getting started
+
+### Hardware requirements
+- CUDA or ROCm capable device
+
 ### Software requirements
 - XCAT
   - The ```XCAT_PATH``` environment variable should point to the directory containing dxcat2_64bit and the XCAT configuration and phantom files, including xcat2.cfg and vfemale50.nrb
 - SIMIND v8.0
   - The ```SIMIND_PATH``` environment variable should point to the directory containing the simind executable and the smc_dir data directory.
 - [OMEGA toolbox](https://github.com/saarlemo/OMEGA/tree/spect)
+  - Add ```source/Python``` folder to ```PYTHONPATH```.
+- Python 3.12 or newer
+  - Required packages are in requirements.txt. Install a PyTorch build first.
+  - For AMD hardware, install a matching ROCm build of PyTorch and CuPy
 - Tested on Linux (Ubuntu 24.04)
+
 
 ### Running the suite
 
@@ -23,6 +32,8 @@ In the table below is a brief review of DIP in medical image reconstruction. Pub
 |    Wu *et al.* [2]     |  SPECT   |  Multiple U-net, multiple FCNN    |       INR         |       2D       |
 |    Hori *et al.* [3]   |  SPECT   |              U-net                |       None        |       2D       |
 | Hashimoto *et al.* [4] |   PET    |              U-net                |       None        |       3D       |
+|  Vornehm *et al.* [5]  |   MRI    |       U-net, FCNN, decoder        |   INR, decoder    |       2D       |
+|    Gong *et al.* [6]   |   PET    |              U-net                |       None        |       3D       |
 
 
 ## ECG gating schemes
@@ -52,3 +63,7 @@ Three energy windows are saved: a 126.45–154.55 keV photopeak window, a 119.42
 [3] Hori, Kensuke, Fumio Hashimoto, Kazuya Koyama, and Takeyuki Hashimoto. 2025. “Limited-Angle SPECT Image Reconstruction Using Deep Image Prior.” Physics in Medicine & Biology 70 (14): 145005. https://doi.org/10.1088/1361-6560/adea09.
 
 [4] Hashimoto, Fumio, Yuya Onishi, Kibo Ote, Hideaki Tashima, and Taiga Yamaya. 2023. “Fully 3D Implementation of the End-to-End Deep Image Prior-Based PET Image Reconstruction Using Block Iterative Algorithm.” Physics in Medicine & Biology 68 (15): 155009. https://doi.org/10.1088/1361-6560/ace49c.
+
+[5] Vornehm, Marc, Chong Chen, Muhammad A. Sultan, et al. 2025. ‘Multi‐dynamic Deep Image Prior for Cardiac MRI’. Magnetic Resonance in Medicine 94 (6): 2668–79. https://doi.org/10.1002/mrm.70000.
+
+[6] Gong, Kuang, Ciprian Catana, Jinyi Qi, and Quanzheng Li. 2019. ‘PET Image Reconstruction Using Deep Image Prior’. IEEE Transactions on Medical Imaging 38 (7): 1655–65. https://doi.org/10.1109/tmi.2018.2888491.
