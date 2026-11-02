@@ -2,9 +2,11 @@
 
 ## Getting started
 ### Software requirements
-- XCAT (env variable path)
-- SIMIND v8.0 (env variable path)
-- OMEGA toolbox
+- XCAT
+  - The ```XCAT_PATH``` environment variable should point to the directory containing dxcat2_64bit and the XCAT configuration and phantom files, including xcat2.cfg and vfemale50.nrb
+- SIMIND v8.0
+  - The ```SIMIND_PATH``` environment variable should point to the directory containing the simind executable and the smc_dir data directory.
+- [OMEGA toolbox](https://github.com/saarlemo/OMEGA/tree/spect)
 - Tested on Linux (Ubuntu 24.04)
 
 ### Running the suite
