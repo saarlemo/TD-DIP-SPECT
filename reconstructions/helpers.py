@@ -1,13 +1,17 @@
 """Shared study, TD-DIP network and BSREM + NLM utilities."""
 from __future__ import annotations
 
+import csv
 import json
+import os
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
+import h5py
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 from scipy.io import loadmat
@@ -691,3 +695,128 @@ def _reconstruct(study, images, snapshot, shape_xyz, multiplier, beta,
         if checkpoint is not None:
             checkpoint(iteration + 1, images)
     return images
+
+
+def setup_workers(device_name):
+    """Use one device per torchrun rank, or a single device otherwise."""
+    world_size = int(os.environ.get('WORLD_SIZE', '1'))
+    rank = int(os.environ.get('RANK', '0'))
+    if world_size == 1:
+        return torch.device(device_name), rank, world_size
+    if device_name.startswith('cuda'):
+        device = torch.device('cuda', int(os.environ['LOCAL_RANK']))
+        torch.cuda.set_device(device)
+        backend = 'nccl'
+    else:
+        device = torch.device(device_name)
+        backend = 'gloo'
+    dist.init_process_group(backend=backend)
+    return device, rank, world_size
+
+
+def frame_update_budgets(frame_count, total_frame_evaluations, seed=0):
+    """Distribute the shared TD-DIP frame evaluations evenly over frames."""
+    if frame_count < 1 or total_frame_evaluations < frame_count:
+        raise ValueError('Each frame needs at least one frame evaluation')
+    updates, remainder = divmod(total_frame_evaluations, frame_count)
+    budgets = np.full(frame_count, updates, dtype=np.int64)
+    if remainder:
+        budgets[np.random.default_rng(seed).permutation(frame_count)[:remainder]] += 1
+    return budgets
+
+
+def _poisson_kl(expected, observed, mask):
+    valid = mask > 0
+    mean, counts = expected[valid], observed[valid]
+    positive = counts > 0
+    loss = (mean - counts).sum()
+    loss += (counts[positive] * (counts[positive].log() - mean[positive].log())).sum()
+    gradient = torch.zeros_like(expected)
+    gradient[valid] = 1 - counts / mean
+    return loss, gradient
+
+
+def train_frame(study, frame, geometry, settings, *, device, steps, batch_size,
+                learning_rate, decay_steps, decay_factor, epsilon, seed,
+                mixed_precision, log_interval):
+    """Fit one decoder and return its image, initial KL, and saved-image KL."""
+    frame_seed = int(seed + frame)
+    cuda_devices = [device.index or 0] if device.type == 'cuda' else []
+    with torch.random.fork_rng(devices=cuda_devices):
+        torch.manual_seed(frame_seed)
+        model = MultiResolutionDIPNet3D(settings, geometry).to(device).train()
+    generator = torch.Generator(device='cpu').manual_seed(frame_seed)
+    noise = torch.rand((1, settings.manifold_dim), generator=generator).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate,
+                                 betas=(0.9, 0.999), eps=1e-8)
+    prompt, scatter, mask = study.frame_data(frame, 0, device)
+    first_kl = None
+    for step in range(steps):
+        equivalent_step = step * study.num_frames // min(batch_size, study.num_frames)
+        for group in optimizer.param_groups:
+            group['lr'] = learning_rate * decay_factor ** (equivalent_step // decay_steps)
+        optimizer.zero_grad(set_to_none=True)
+        with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
+                            enabled=mixed_precision):
+            image = model(noise).float()
+        with torch.no_grad():
+            expected = study.forward(frame, 0, image.detach().reshape(-1)) + scatter + epsilon
+            loss, gradient = _poisson_kl(expected, prompt, mask)
+            image_gradient = study.backward(frame, 0, gradient).reshape_as(image)
+        image.backward(image_gradient)
+        optimizer.step()
+        if first_kl is None:
+            first_kl = float(loss)
+        if log_interval and (step + 1) % log_interval == 0:
+            print(f'frame {frame + 1}: step {step + 1}/{steps}, KL={float(loss):.8g}', flush=True)
+
+    model.eval()
+    with torch.no_grad():
+        image = model(noise).float()
+        expected = study.forward(frame, 0, image.reshape(-1)) + scatter + epsilon
+        final_kl, _ = _poisson_kl(expected, prompt, mask)
+        output = image.reshape(-1).cpu().numpy()
+    return output, first_kl, float(final_kl)
+
+
+def merge_ranked_dip_outputs(output_path, metrics_path, shard_paths,
+                             metrics_shard_paths, frame_start, frame_stop,
+                             total_frame_evaluations, metric_fields):
+    """Merge rank-local DIP files into frame order, checking complete coverage."""
+    frame_count = frame_stop - frame_start
+    rows = []
+    for path in metrics_shard_paths:
+        with Path(path).open('r', newline='', encoding='utf-8') as stream:
+            rows.extend(csv.DictReader(stream))
+    rows.sort(key=lambda row: int(row['frame_index']))
+    if [int(row['frame_index']) for row in rows] != list(range(frame_start, frame_stop)):
+        raise RuntimeError('DIP metric shards do not contain each selected frame exactly once')
+    written = np.zeros(frame_count, dtype=bool)
+    with h5py.File(shard_paths[0], 'r') as first:
+        image_size = first['reconstruction_packed'].shape[1]
+        with h5py.File(output_path, 'w') as result:
+            images = result.create_dataset('reconstruction_packed', (frame_count, image_size),
+                                           dtype=np.float32, chunks=(1, image_size),
+                                           compression='gzip', compression_opts=1, shuffle=True)
+            for name, value in first.attrs.items():
+                result.attrs[name] = value
+            result.attrs['frame_start'] = int(frame_start)
+            result.attrs['frame_count'] = int(frame_count)
+            result.attrs['total_frame_evaluations'] = int(total_frame_evaluations)
+            result.create_dataset('frame_indices', data=np.arange(frame_start, frame_stop))
+            for path in shard_paths:
+                with h5py.File(path, 'r') as shard:
+                    for row, frame in enumerate(shard['frame_indices'][:]):
+                        index = int(frame) - frame_start
+                        if index < 0 or index >= frame_count or written[index]:
+                            raise RuntimeError(f'Invalid or duplicate DIP frame index {frame}')
+                        images[index] = shard['reconstruction_packed'][row]
+                        written[index] = True
+            if not written.all():
+                raise RuntimeError('Missing DIP frames during merge')
+    with Path(metrics_path).open('w', newline='', encoding='utf-8') as stream:
+        writer = csv.DictWriter(stream, fieldnames=metric_fields)
+        writer.writeheader()
+        writer.writerows(rows)
+    for path in (*shard_paths, *metrics_shard_paths):
+        Path(path).unlink()

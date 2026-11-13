@@ -13,7 +13,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
-METHODS = [('OSEM','#3B6FB6'), ('BSREM + NLM','#009E73'), ('TD-DIP','#D55E00')]
+METHODS = [('OSEM','#3B6FB6'), ('BSREM + NLM','#009E73'),
+           ('DIP','#CC79A7'), ('TD-DIP','#D55E00')]
 METRICS = [('cnr','CNR'), ('wall_cov_percent','Wall CoV (%)'), ('ssim','SSIM'), ('psnr_db','PSNR (dB)')]
 
 

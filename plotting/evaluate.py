@@ -2,7 +2,8 @@
 """Measure one prepared XCAT study and save phase-zero axial slices.
 
 Example: python evaluate.py --study DATA/static/gates_8 --mode static \
-    --osem RUNS/osem --bsrem RUNS/bsrem --dip RUNS/static_td_dip_step003000.pt \
+    --osem RUNS/osem --bsrem RUNS/bsrem --dip RUNS/static_dip.h5 \
+    --td-dip RUNS/static_td_dip_step003000.pt \
     --output RESULTS/static_8
 The dynamic study uses the same static truth directory with --mode dynamic.
 """
@@ -26,12 +27,39 @@ import truth_masks
 METRICS = ('cnr', 'wall_cov_percent', 'ssim', 'psnr_db')
 
 
+class FrameOrderedResult:
+    """Read a DIP result in study frame order, including older unordered files."""
+
+    def __init__(self, images, frame_indices):
+        indices = np.asarray(frame_indices, dtype=np.int64)
+        if indices.shape != (len(images),):
+            raise ValueError('DIP frame_indices do not match the reconstruction')
+        self.order = np.argsort(indices)
+        if not np.array_equal(indices[self.order], np.arange(len(images))):
+            raise ValueError('DIP output must contain every frame exactly once, starting at zero')
+        self.images = images
+
+    def __len__(self):
+        return len(self.order)
+
+    def __getitem__(self, frame):
+        return self.images[int(self.order[frame])]
+
+
 def open_result(method, path, mode, device):
     path = Path(path)
-    if method == 'OSEM':
-        h = h5py.File(path / f'{mode}_osem.h5' if path.is_dir() else path, 'r')
-        geo = [h.attrs['volume_shape_xyz'], h.attrs['volume_origin_xyz'], h.attrs['volume_spacing_xyz']]
-        return h['reconstruction_packed'], geo, float(h.attrs['gain']), h
+    if method in ('OSEM', 'DIP'):
+        filename = f'{mode}_{method.lower()}.h5'
+        h = h5py.File(path / filename if path.is_dir() else path, 'r')
+        try:
+            geo = [h.attrs['volume_shape_xyz'], h.attrs['volume_origin_xyz'], h.attrs['volume_spacing_xyz']]
+            images = h['reconstruction_packed']
+            if method == 'DIP':
+                images = FrameOrderedResult(images, h['frame_indices'][:])
+            return images, geo, float(h.attrs['gain']), h
+        except Exception:
+            h.close()
+            raise
     if method == 'BSREM + NLM':
         directory = path if path.is_dir() else path.parent
         with np.load(directory / 'geometry.npz') as meta:
@@ -132,14 +160,17 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--study', type=Path, required=True, help='Prepared static gates_N directory containing truth')
     p.add_argument('--mode', choices=('static', 'dynamic'), required=True)
-    p.add_argument('--osem', type=Path); p.add_argument('--bsrem', type=Path); p.add_argument('--dip', type=Path)
+    p.add_argument('--osem', type=Path); p.add_argument('--bsrem', type=Path)
+    p.add_argument('--dip', type=Path, help='Independent per-frame DIP HDF5 output')
+    p.add_argument('--td-dip', type=Path, help='Time-dependent DIP checkpoint')
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--masks', type=Path, help='Read or write truth-mask cache (default: OUTPUT/truth_masks.npz)')
     p.add_argument('--device', default='cpu', help='Device for TD-DIP checkpoint inference')
     p.add_argument('--cycle', type=int, default=600, help='Cycle for dynamic phase-zero slice')
     p.add_argument('--slice', type=int, default=17, help='Zero-based axial index within fine ROI')
     args = p.parse_args()
-    paths = [('OSEM', args.osem), ('BSREM + NLM', args.bsrem), ('TD-DIP', args.dip)]
+    paths = [('OSEM', args.osem), ('BSREM + NLM', args.bsrem),
+             ('DIP', args.dip), ('TD-DIP', args.td_dip)]
     paths = [(m, path) for m, path in paths if path is not None]
     if not paths: p.error('Provide at least one reconstruction')
     args.output.mkdir(parents=True, exist_ok=True)
