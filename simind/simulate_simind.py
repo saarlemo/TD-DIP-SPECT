@@ -92,7 +92,9 @@ def make_run(phase: int, head: int, args: argparse.Namespace) -> Path | None:
             metadata = json.loads(manifest.read_text())
             complete = all(path.is_file() and path.stat().st_size == 128 * 128 * 120 * 4 for path in projections)
             matches = (metadata.get("phase") == phase and metadata.get("head") == head
-                       and metadata.get("histories_per_view") == args.histories)
+                       and metadata.get("histories_per_view") == args.histories
+                       and metadata.get("ranmar_ij") == 67 + 2 * (phase - 1) + head
+                       and metadata.get("ranmar_kl") == 67 + 17 * (2 * (phase - 1) + head))
         except (OSError, ValueError, AttributeError):
             complete = matches = False
         if complete and matches:
@@ -126,7 +128,7 @@ def make_run(phase: int, head: int, args: argparse.Namespace) -> Path | None:
 
     # Two distinct streams per phase; all 512 phase/head combinations are unique.
     run_id = 2 * (phase - 1) + head
-    ij, kl = 1802 + run_id, 9373 + 17 * run_id
+    ij, kl = 67 + run_id, 67 + 17 * run_id
     data_dir = run_dir / "smc_data"
     data_dir.mkdir(exist_ok=True)
     for item in args.smc_dir.iterdir():

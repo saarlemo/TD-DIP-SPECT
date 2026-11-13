@@ -20,7 +20,7 @@ from helpers import MultiResolutionDIPNet3D, MultiResolutionGeometry, NetworkSet
 def reconstruct(study, model, gate_indices, midpoint_times, number_of_gates, *,
                 device, steps=100000, batch_size=8, latent_dim=8,
                 learning_rate=0.002, decay_steps=2500, decay_factor=0.75,
-                epsilon=1e-5, seed=0, mixed_precision=False, checkpoint=None):
+                epsilon=1e-5, seed=67, mixed_precision=False, checkpoint=None):
     """Train a phase-and-time decoder; midpoint times can use any time unit.
 
     ``checkpoint``, if given, receives (step, model, latents, losses) after each
@@ -99,7 +99,7 @@ def main():
     study = open_study('dynamic', args.input_dir, args.output_dir, args.gates,
                        device, subsets=1, rays=13, roi_shape=(32, 32, 32),
                        coarse_scale=0.25, cache_size=args.projector_cache_size)
-    torch.manual_seed(0)
+    torch.manual_seed(67)
     geometry = MultiResolutionGeometry.from_options(study.options)
     settings = NetworkSettings(manifold_dim=8, output_activation='softplus')
     model = MultiResolutionDIPNet3D(settings, geometry).to(device)

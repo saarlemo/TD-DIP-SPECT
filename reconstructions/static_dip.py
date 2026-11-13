@@ -43,7 +43,7 @@ def main():
         subsets=1, rays=13, roi_shape=(32, 32, 32), coarse_scale=0.25,
         cache_size=args.projector_cache_size,
     )
-    torch.manual_seed(0)
+    torch.manual_seed(67)
     geometry = MultiResolutionGeometry.from_options(study.options)
     settings = NetworkSettings(manifold_dim=8, output_activation='softplus')
     frame_updates = frame_update_budgets(
@@ -90,7 +90,7 @@ def main():
         result.attrs['td_dip_total_frame_evaluations'] = int(frame_updates.sum())
         result.attrs['total_frame_evaluations'] = int(sum(frame_updates[gate] for gate in rank_frames))
         result.attrs['td_dip_decay_steps'] = int(decay_steps)
-        result.attrs['seed'] = 0
+        result.attrs['seed'] = 67
         result.attrs['network_settings_json'] = json.dumps(asdict(settings))
         result.attrs['geometry_json'] = json.dumps(geometry.to_dict())
         result.attrs['frame_order'] = 'gate order from study.json'
@@ -106,7 +106,7 @@ def main():
                     study, gate, geometry, settings, device=device,
                     steps=int(frame_updates[gate]), batch_size=args.batch_size,
                     learning_rate=0.002, decay_steps=decay_steps, decay_factor=0.75,
-                    epsilon=float(study.options.epps), seed=0,
+                    epsilon=float(study.options.epps), seed=67,
                     mixed_precision=not args.fp32, log_interval=args.log_interval,
                 )
                 images[output_index] = packed
@@ -114,7 +114,7 @@ def main():
                     'frame_index': gate,
                     'gate_index': int(study.gate_indices[gate]),
                     'midpoint_phase': float(study.midpoint_times[gate]),
-                    'seed': gate,
+                    'seed': 67 + gate,
                     'updates': int(frame_updates[gate]),
                     'first_update_kl': first_kl,
                     'final_kl': final_kl,

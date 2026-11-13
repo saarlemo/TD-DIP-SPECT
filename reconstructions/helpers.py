@@ -190,7 +190,7 @@ class XCATStudy:
         o.useHIPFastAtomics = torch.version.hip is not None
         o.subsets = 120 if self.dynamic else self.num_subsets
         o.subsetType = 8 if self.dynamic else 9
-        o.seed = -1 if self.dynamic else 20261005
+        o.seed = 67
         o.n_rays_transaxial = o.n_rays_axial = self.rays
         o.verbose = 0
         if not self.full_fov:
@@ -743,7 +743,7 @@ def setup_workers(device_name):
     return device, rank, world_size
 
 
-def frame_update_budgets(frame_count, total_frame_evaluations, seed=0):
+def frame_update_budgets(frame_count, total_frame_evaluations, seed=67):
     """Distribute the shared TD-DIP frame evaluations evenly over frames."""
     if frame_count < 1 or total_frame_evaluations < frame_count:
         raise ValueError('Each frame needs at least one frame evaluation')

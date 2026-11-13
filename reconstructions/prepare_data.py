@@ -297,7 +297,7 @@ def main():
     parser.add_argument('--output-dir', type=Path,
                         help='Output directory (default: reconstructions/data/NGates)')
     parser.add_argument('--device', default='cuda:0', help='CUDA/ROCm device used for gain calibration')
-    parser.add_argument('--seed', type=int, default=20261014)
+    parser.add_argument('--seed', type=int, default=67)
     args = parser.parse_args()
     output = args.output_dir or HERE / 'data' / f'{args.gates}gates'
     static = output / 'static'
