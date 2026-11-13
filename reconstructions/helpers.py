@@ -79,6 +79,8 @@ class XCATStudy:
         self.mode = mode
         self.root = Path(input_dir).resolve()
         self.device = torch.device(device)
+        if self.device.type == 'cuda' and self.device.index is None:
+            self.device = torch.device('cuda', torch.cuda.current_device())
         torch.cuda.set_device(self.device)
         import cupy
         cupy.cuda.Device(self.device.index or 0).use()
@@ -164,7 +166,9 @@ class XCATStudy:
         o.DetectorVector = np.asarray(m['head_ids_zero_based'], dtype=np.uint32)[views]
         o.radiusPerProj = np.asarray(radius, dtype=np.float32)[views].copy()
         o.dPitchX, o.dPitchY = m['detector_pixel_mm']
+        # The SPECT ray projector still uses colL to place the collimator plane.
         o.colLxy = o.colLz = float(m['collimator_length_mm'])
+        o.colL = float(m['collimator_length_mm'])
         o.colR = float(m['collimator_hole_radius_mm'])
         o.colD = 0.
         o.iR = float(m['intrinsic_fwhm_mm'])
@@ -179,6 +183,8 @@ class XCATStudy:
         o.corrections_during_reconstruction = True
         o.projector_type = 1
         o.useCUDA = o.useCuPy = o.useTorch = True
+        # This project passes packed Fortran-order vectors to the projector.
+        o.useRowMajor = False
         o.deviceNum = self.device.index or 0
         o.useAF = o.useImages = o.useCPU = False
         o.useHIPFastAtomics = torch.version.hip is not None

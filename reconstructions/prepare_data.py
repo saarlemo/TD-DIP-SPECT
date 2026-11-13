@@ -226,6 +226,8 @@ def calibrate_gain(static_dir, device):
     import cupy
 
     device = torch.device(device)
+    if device.type == 'cuda' and device.index is None:
+        device = torch.device('cuda', torch.cuda.current_device())
     torch.cuda.set_device(device)
     cupy.cuda.Device(device.index or 0).use()
     study = open_study('static', static_dir, static_dir, 8, device, subsets=1,
