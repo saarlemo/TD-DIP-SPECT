@@ -83,7 +83,22 @@ def configure_smc(template: Path, run_dir: Path, head: int, activity_mbq: float)
         "126.45,154.55,0\n119.425,126.45,0\n154.55,161.575,0\n")
 
 
-def make_run(phase: int, head: int, args: argparse.Namespace) -> Path:
+def make_run(phase: int, head: int, args: argparse.Namespace) -> Path | None:
+    run_dir = args.output_dir / f"phase_{phase:03d}" / f"head_{head}"
+    projections = [run_dir / f"projection_tot_w{window}.a00" for window in (1, 2, 3)]
+    manifest = run_dir / "run.json"
+    if any(path.exists() for path in projections) or manifest.exists():
+        try:
+            metadata = json.loads(manifest.read_text())
+            complete = all(path.is_file() and path.stat().st_size == 128 * 128 * 120 * 4 for path in projections)
+            matches = (metadata.get("phase") == phase and metadata.get("head") == head
+                       and metadata.get("histories_per_view") == args.histories)
+        except (OSError, ValueError, AttributeError):
+            complete = matches = False
+        if complete and matches:
+            print(f"SIMIND phase {phase}, head {head} already exists; skipping", flush=True)
+            return None
+        raise FileExistsError(f"Incomplete, invalid, or incompatible SIMIND output in {run_dir}; remove it before retrying")
     xcat = args.xcat_dir
     activity_path = xcat / f"cardiac256_act_{phase}.bin"
     attenuation_path = xcat / f"cardiac256_atn_{phase}.bin"
@@ -100,10 +115,7 @@ def make_run(phase: int, head: int, args: argparse.Namespace) -> Path:
         raise ValueError(f"phase {phase}: activity must have a positive finite sum")
     activity_mbq = total * SOURCE_SCALE_MBQ
 
-    run_dir = args.output_dir / f"phase_{phase:03d}" / f"head_{head}"
     run_dir.mkdir(parents=True, exist_ok=True)
-    if (run_dir / "projection_tot_w1.a00").exists():
-        raise FileExistsError(f"SIMIND output already exists in {run_dir}")
     scaled = (activity * (args.histories / total)).astype("<f4")
     scaled.tofile(run_dir / "source_act_1.bin")
     target_atn = run_dir / "source_atn_1.bin"
@@ -191,7 +203,8 @@ def main() -> int:
     for phase in args.phases:
         for head in (0, 1):
             run_dir = make_run(phase, head, args)
-            print(f"Prepared phase {phase}, head {head}: {run_dir}", flush=True)
+            if run_dir is not None:
+                print(f"Prepared phase {phase}, head {head}: {run_dir}", flush=True)
     return 0
 
 

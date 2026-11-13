@@ -264,6 +264,31 @@ def calibrate_gain(static_dir, device):
     print(f"Calibrated gain: {result['gain']:.8g}", flush=True)
 
 
+def prepared_exists(output, gates, seed):
+    """Check the manifests and files written by a complete preparation."""
+    try:
+        static = output / 'static'
+        for count in {8, gates}:
+            directory = static / f'gates_{count}'
+            manifest = json.loads((directory / 'study.json').read_text())
+            if manifest['gate_count'] != count or manifest['poisson_seed'] != seed:
+                return False
+            for key in ('projection_files', 'truth_files', 'attenuation_files'):
+                if len(manifest[key]) != count or not all((directory / name).is_file() for name in manifest[key]):
+                    return False
+        directory = output / 'dynamic' / f'gates_{gates}'
+        manifest = json.loads((directory / 'study.json').read_text())
+        if manifest['gate_count'] != gates or manifest['allocation_seed'] != seed:
+            return False
+        files = [manifest['timeline_geometry_file'], *manifest['count_files'].values()]
+        calibration = json.loads((static / 'gain_calibration.json').read_text())
+        return (set(manifest['count_files']) == set(WINDOWS)
+                and all((directory / name).is_file() for name in files)
+                and np.isfinite(calibration['gain']) and calibration['gain'] > 0)
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--gates', type=int, choices=(8, 16, 32, 64, 128, 256), default=8)
@@ -279,7 +304,10 @@ def main():
     dynamic = output / 'dynamic'
     reference = static / 'gates_8'
     if output.exists() and any(output.iterdir()):
-        parser.error(f'Output directory is not empty: {output}')
+        if prepared_exists(output, args.gates, args.seed):
+            print(f'Prepared data already exists; skipping: {output}', flush=True)
+            return
+        parser.error(f'Output directory contains incomplete, invalid, or incompatible data: {output}; remove it before retrying')
     import torch
     import cupy
     from omegatomo.projector import proj

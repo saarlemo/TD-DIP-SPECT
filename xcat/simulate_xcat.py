@@ -66,8 +66,12 @@ def main() -> None:
     for phase in range(args.first_phase, args.first_phase + args.phase_count):
         destinations = [output / f"cardiac256_{kind}_{phase}.bin" for kind in ("act", "atn")]
         existing = [path for path in destinations if path.exists()]
+        expected_bytes = 256 * 256 * 306 * 4
+        if len(existing) == 2 and all(path.is_file() and path.stat().st_size == expected_bytes for path in destinations):
+            print(f"XCAT phase {phase} already exists; skipping", flush=True)
+            continue
         if existing:
-            raise FileExistsError(f"Refusing to overwrite existing output: {existing[0]}")
+            raise FileExistsError(f"Incomplete or invalid XCAT output for phase {phase}; remove it before retrying: {existing[0]}")
 
         phase_text = set_parameter(template, "hrt_start_ph_index", f"{(phase - 1) / PHASES:.12f}")
         phase_text = set_parameter(phase_text, "out_period", f"{1 / PHASES:.8f}")
