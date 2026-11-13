@@ -29,6 +29,26 @@ def _volume(path):
     return loadmat(path)['attenuation_cm1']
 
 
+def _tew_scatter(lower, upper, manifest):
+    """Estimate the primary-window scatter counts from raw side windows."""
+    keys = ('main_energy_bounds_keV', 'lower_energy_bounds_keV', 'upper_energy_bounds_keV')
+    if not any(key in manifest for key in keys):
+        # Older prepared studies explicitly recorded these fixed TEW weights.
+        if manifest.get('scatter_method') == '2 * (lower + upper)':
+            return 2.0 * lower + 2.0 * upper
+        raise ValueError('Study manifest must specify energy-window bounds for TEW scatter')
+    if not all(key in manifest for key in keys):
+        raise ValueError('Study manifest must specify all three energy-window bounds')
+    main, low, high = (np.asarray(manifest[key], dtype=np.float64) for key in keys)
+    bounds = (main, low, high)
+    if any(b.shape != (2,) or not np.all(np.isfinite(b)) or b[1] <= b[0] for b in bounds):
+        raise ValueError('Study manifest must contain valid prompt, lower, and upper energy-window bounds')
+    main_width = main[1] - main[0]
+    lower_width = low[1] - low[0]
+    upper_width = high[1] - high[0]
+    return 0.5 * main_width * (lower / lower_width + upper / upper_width)
+
+
 def _configure_multiresolution(options, manifest, roi_shape, scale):
     from omegatomo.util.efovcorrection import CTEFOVCorrection
 
@@ -112,7 +132,7 @@ class XCATStudy:
     def _data(self, gate):
         if self._gate != gate:
             self._gate_data = loadmat(self.static_root / self.static_manifest['projection_files'][gate],
-                                      variable_names=['prompt', 'scatter', 'radius_to_crystal_mm'])
+                                      variable_names=['prompt', 'lower', 'upper', 'radius_to_crystal_mm'])
             self._gate = gate
         return self._gate_data
 
@@ -187,7 +207,8 @@ class XCATStudy:
             data = {k: torch.as_tensor(v.getrow(frame).toarray().ravel(), dtype=torch.float32, device=device)
                     for k, v in self.counts.items()}
             mask = torch.as_tensor(np.tile(self.active_mask.ravel(order='F'), 2), dtype=torch.float32, device=device)
-            return data['prompt'] * mask, 2 * (data['lower'] + data['upper']) * mask, mask
+            scatter = _tew_scatter(data['lower'], data['upper'], self.static_manifest)
+            return data['prompt'] * mask, scatter * mask, mask
         o = self.projector(frame)
         counts = np.asarray(o.nProjSubset).ravel()
         offsets = np.r_[0, np.cumsum(counts)]
@@ -195,7 +216,9 @@ class XCATStudy:
         values = self._data(frame)
         mask = np.tile(self.active_mask.ravel(order='F'), len(indices)).astype(np.float32)
         prompt = values['prompt'][:, :, indices].ravel(order='F') * mask
-        scatter = values['scatter'][:, :, indices].ravel(order='F') * mask
+        lower = values['lower'][:, :, indices]
+        upper = values['upper'][:, :, indices]
+        scatter = _tew_scatter(lower, upper, self.static_manifest).ravel(order='F') * mask
         return tuple(torch.as_tensor(a, dtype=torch.float32, device=device) for a in (prompt, scatter, mask))
 
     def _selection(self, frame, subset):

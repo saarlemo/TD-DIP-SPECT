@@ -24,6 +24,11 @@ NATIVE_SHAPE = (256, 256, 306)
 VOXEL_MM = 2.46
 SOURCE_SCALE_MBQ = 210.0 / 11_681_335
 WINDOWS = ('prompt', 'lower', 'upper')
+ENERGY_WINDOWS_KEV = {
+    'prompt': [126.45, 154.55],
+    'lower': [119.425, 126.45],
+    'upper': [154.55, 161.575],
+}
 
 
 def native_volume(path):
@@ -83,8 +88,15 @@ def static_manifest(gates, seed):
         attenuation_files=[f'mu_{g:03d}.npz' for g in range(1, gates + 1)],
         truth_files=[f'truth_{g:03d}.npz' for g in range(1, gates + 1)],
         projection_files=[f'gate_{g:03d}.mat' for g in range(1, gates + 1)],
+        energy_window_names=list(WINDOWS),
+        main_energy_bounds_keV=ENERGY_WINDOWS_KEV['prompt'],
+        lower_energy_bounds_keV=ENERGY_WINDOWS_KEV['lower'],
+        upper_energy_bounds_keV=ENERGY_WINDOWS_KEV['upper'],
+        energy_window_widths_keV=[ENERGY_WINDOWS_KEV[name][1] - ENERGY_WINDOWS_KEV[name][0]
+                                  for name in WINDOWS],
         truth_units='MBq per native voxel', attenuation_units='cm^-1',
-        poisson_seed=seed, scatter_method='2 * (lower + upper)',
+        poisson_seed=seed,
+        scatter_method='TEW derived at reconstruction time from side-window widths',
         gate_phase_intervals_s=[[g / gates, (g + 1) / gates] for g in range(gates)])
 
 
@@ -114,9 +126,8 @@ def prepare_gates(simind_dir, xcat_dir, static_dir, dynamic_dir, gates, seed):
                     split_phase(sampled, split_rng, *fragments[name])
             activity += native_volume(xcat_dir / f'cardiac256_act_{phase}.bin') * (SOURCE_SCALE_MBQ / phases_per_gate)
             attenuation += native_volume(xcat_dir / f'cardiac256_atn_{phase}.bin') / (0.246 * phases_per_gate)
-        scatter = 2 * (counts['lower'].astype(np.float32) + counts['upper'].astype(np.float32))
         savemat(static_dir / f'gate_{gate + 1:03d}.mat',
-                {**counts, 'scatter': scatter, 'radius_to_crystal_mm': radius.astype(np.float32)},
+                {**counts, 'radius_to_crystal_mm': radius.astype(np.float32)},
                 do_compression=True)
         np.savez_compressed(static_dir / f'truth_{gate + 1:03d}.npz', data=activity)
         np.savez_compressed(static_dir / f'mu_{gate + 1:03d}.npz', data=attenuation)
@@ -174,8 +185,14 @@ def prepare_dynamic(directory, static_dir, static, radii, matrices, seed):
         timeline_geometry_file='timeline_geometry.npz',
         count_files={name: f'{name}.npz' for name in WINDOWS},
         allocation_seed=seed, synthetic_timeline=True,
+        energy_window_names=static['energy_window_names'],
+        main_energy_bounds_keV=static['main_energy_bounds_keV'],
+        lower_energy_bounds_keV=static['lower_energy_bounds_keV'],
+        upper_energy_bounds_keV=static['upper_energy_bounds_keV'],
+        energy_window_widths_keV=static['energy_window_widths_keV'],
         row_order='cycle * gate_count + gate',
-        scatter_method='2 * (lower + upper)', reconstruction_units='kBq/mL')
+        scatter_method='TEW derived at reconstruction time from side-window widths',
+        reconstruction_units='kBq/mL')
     (directory / 'study.json').write_text(json.dumps(manifest, indent=2) + '\n')
 
 
