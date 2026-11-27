@@ -8,7 +8,7 @@ alter_lung_dens = 0             # alter_lung_dens (0 = keep lung density constan
 
 motion_option = 0	# motion_option  (0=beating heart only, 1=respiratory motion only, 2=both motions) see NOTE 2
 
-out_period = 0.00390625		# output_period (SECS) (if <= 0, then output_period=time_per_frame*output_frames)
+out_period = 0.03125		# output_period (SECS) (if <= 0, then output_period=time_per_frame*output_frames)
 time_per_frame = 0	# time_per_frame (SECS) (**IGNORED unless output_period<=0**)
 out_frames = 1		# output_frames (# of output time frames )
 

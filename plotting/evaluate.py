@@ -20,7 +20,7 @@ import torch
 from scipy.ndimage import gaussian_filter
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'reconstructions'))
-from helpers import MultiResolutionDIPNet3D, MultiResolutionGeometry, NetworkSettings
+from helpers import GATE_COUNTS, MultiResolutionDIPNet3D, MultiResolutionGeometry, NetworkSettings
 from prepare_data import resample_density
 import truth_masks
 
@@ -72,11 +72,22 @@ def open_result(method, path, mode, device):
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     latent = checkpoint['latents'].to(device)
+    inference_batch_size = int(checkpoint['inference_batch_size'])
     geo = [np.asarray(checkpoint[k]) for k in ('volume_shape_xyz', 'volume_origin_xyz', 'volume_spacing_xyz')]
     class Decoder:
+        def __init__(self):
+            self.cache_start = None
+            self.cache = None
+
         def __len__(self): return len(latent)
         def __getitem__(self, frame):
-            with torch.inference_mode(): return model(latent[frame:frame + 1]).float().cpu().numpy().reshape(-1)
+            start = (int(frame) // inference_batch_size) * inference_batch_size
+            if start != self.cache_start:
+                stop = min(start + inference_batch_size, len(latent))
+                with torch.inference_mode():
+                    self.cache = model(latent[start:stop]).float().cpu().numpy()
+                self.cache_start = start
+            return self.cache[int(frame) - start].reshape(-1)
     return Decoder(), geo, float(checkpoint['gain']), None
 
 
@@ -161,7 +172,7 @@ def main():
     p.add_argument('--study', type=Path, required=True, help='Prepared static gates_N directory containing truth')
     p.add_argument('--mode', choices=('static', 'dynamic'), required=True)
     p.add_argument('--osem', type=Path); p.add_argument('--bsrem', type=Path)
-    p.add_argument('--dip', type=Path, help='Independent per-frame DIP HDF5 output')
+    p.add_argument('--dip', type=Path, help='DIP HDF5 output')
     p.add_argument('--td-dip', type=Path, help='Time-dependent DIP checkpoint')
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--masks', type=Path, help='Read or write truth-mask cache (default: OUTPUT/truth_masks.npz)')
@@ -175,6 +186,8 @@ def main():
     if not paths: p.error('Provide at least one reconstruction')
     args.output.mkdir(parents=True, exist_ok=True)
     manifest = json.loads((args.study / 'study.json').read_text()); gates = int(manifest['gate_count'])
+    if gates not in GATE_COUNTS:
+        p.error(f'Gate count must be one of {GATE_COUNTS}')
     sources, geometry, handles = [], None, []
     gain = float(json.loads((args.study.parent / 'gain_calibration.json').read_text())['gain'])
     for method, path in paths:
@@ -191,7 +204,6 @@ def main():
     if not 0 <= args.slice < geometry[0][0,2]: p.error('Axial slice is outside ROI')
     if args.mode == 'dynamic' and not 0 <= args.cycle < 1200: p.error('Cycle must be 0..1199')
     wall, cavity, truth = masks_for_study(args.study, manifest, geometry, args.masks or args.output/'truth_masks.npz')
-    truth *= 1000
     peak = 75 * 210 / 11_681_335 * 1e6 / np.prod(manifest['voxel_size_mm'])
     selected = 0 if args.mode == 'static' else args.cycle * gates
     slices = {}; summaries = []
@@ -211,11 +223,31 @@ def main():
                 if frame % 1000 == 0: print(f'{method}: {frame + 1}/{len(source)} frames', flush=True)
             results = np.asarray(results)
             for index, metric in enumerate(METRICS):
-                v = results[:,index]; v = v[np.isfinite(v)]
+                gate_values = []
+                for phase in range(gates):
+                    values = results[phase::gates, index]
+                    values = values[np.isfinite(values)]
+                    if len(values):
+                        gate_values.append(float(np.median(values)))
+                v = np.asarray(gate_values, dtype=np.float64)
                 summaries.append(dict(method=method,gate_count=gates,metric=metric,n_valid=len(v),
                                       median=float(np.median(v)) if len(v) else float('nan'),
                                       p2_5=float(np.percentile(v,2.5)) if len(v) else float('nan'),
                                       p97_5=float(np.percentile(v,97.5)) if len(v) else float('nan')))
+    reference_metrics = np.asarray([
+        image_metrics(image, image, w, c, peak)
+        for image, w, c in zip(truth, wall, cavity)
+    ])
+    # Summarize ground-truth image metrics across gates. SSIM is omitted because
+    # comparing the reference with itself would report the uninformative value 1.
+    for index, metric in ((0, 'cnr'), (1, 'wall_cov_percent'), (3, 'psnr_db')):
+        values = reference_metrics[:, index]
+        values = values[~np.isnan(values)]
+        summaries.append(dict(method='Ground truth', gate_count=gates, metric=metric,
+                              n_valid=len(values),
+                              median=float(np.median(values)) if len(values) else float('nan'),
+                              p2_5=float(np.percentile(values, 2.5)) if len(values) else float('nan'),
+                              p97_5=float(np.percentile(values, 97.5)) if len(values) else float('nan')))
     packed = truth_packed(args.study, manifest, geometry)
     slices['Ground truth_roi'] = packed[:int(np.prod(geometry[0][0]))].reshape(tuple(geometry[0][0]), order='F')[:,:,args.slice].T
     slices['Ground truth_full'] = axial_plane(packed, geometry, manifest, args.slice)

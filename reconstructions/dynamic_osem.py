@@ -14,7 +14,7 @@ import torch
 from helpers import open_study
 
 
-def reconstruct(study, device, iterations=4, epsilon=1e-5, checkpoint=None):
+def reconstruct(study, device, iterations=10, epsilon=1e-5, checkpoint=None):
     """Yield each cycle-phase frame and its reconstructed image on the CPU.
 
     The single subset comprises the two simultaneous head projections for the
@@ -39,17 +39,18 @@ def main():
     from pathlib import Path
     import h5py
     import numpy as np
+    from ssim_selection import MedianGateSSIMSelector, write_selection
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('input_dir', type=Path, help='Prepared dynamic-gated XCAT study')
     parser.add_argument('output_dir', type=Path)
-    parser.add_argument('--gates', type=int, required=True)
+    parser.add_argument('--gates', type=int, choices=(8, 16, 32), required=True)
     parser.add_argument('--device', default='cuda:0', help='PyTorch CUDA/ROCm device')
     parser.add_argument('--projector-cache-size', type=int, default=8)
-    parser.add_argument('--iterations', type=int, default=4)
-    parser.add_argument('--checkpoint-interval', type=int, default=0,
-                        help='Save intermediate iterations; 0 saves only the final image')
+    parser.add_argument('--iterations', type=int, default=10)
     args = parser.parse_args()
+    if args.iterations < 1:
+        parser.error('--iterations must be positive')
     device = torch.device(args.device)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -59,6 +60,8 @@ def main():
                        device, subsets=1, rays=13, roi_shape=(32, 32, 32),
                        coarse_scale=0.25, cache_size=args.projector_cache_size)
     packed_size = study.initial(0, device).numel()
+    selector = MedianGateSSIMSelector(study)
+    candidate_scores = {iteration: [] for iteration in range(1, args.iterations + 1)}
     output_path = args.output_dir / 'dynamic_osem.h5'
     with h5py.File(output_path, 'w') as output:
         images = output.create_dataset('reconstruction_packed',
@@ -66,23 +69,48 @@ def main():
             chunks=(1, packed_size), compression='gzip', compression_opts=1)
         output.attrs['gates'] = args.gates
         output.attrs['iterations'] = args.iterations
+        output.attrs['requested_iterations'] = args.iterations
         output.attrs['volume_shape_xyz'] = np.asarray(study.volume_shape_xyz)
         output.attrs['volume_spacing_xyz'] = np.asarray(study.volume_spacing_xyz)
         output.attrs['volume_origin_xyz'] = np.asarray(study.volume_origin_xyz)
         output.attrs['gain'] = study.gain
 
         def save_checkpoint(frame, iteration, image):
-            if args.checkpoint_interval and iteration % args.checkpoint_interval == 0 and iteration < args.iterations:
-                name = f'iteration_{iteration}'
-                if name not in output:
-                    output.create_dataset(name, shape=images.shape, dtype='f4',
-                                          chunks=images.chunks, compression='gzip', compression_opts=1)
-                output[name][frame] = image.detach().cpu().numpy().reshape(-1)
+            candidate_scores[iteration].append((frame, selector.score_frame(frame, image)))
 
         for frame, image in reconstruct(study, device, iterations=args.iterations,
                                         epsilon=float(study.options.epps), checkpoint=save_checkpoint):
             images[frame] = image.numpy().reshape(-1)
             output.flush()
+
+        history = []
+        best_iteration, best_score, best_gate_medians = None, -float('inf'), None
+        for iteration, scores in candidate_scores.items():
+            median_ssim, gate_medians = selector.aggregate(scores)
+            history.append({'step': iteration, 'median_gate_ssim': median_ssim,
+                            'per_gate_median_ssim': gate_medians})
+            if median_ssim > best_score:
+                best_iteration, best_score, best_gate_medians = iteration, median_ssim, gate_medians
+        output.attrs['best_visualization_iteration'] = int(best_iteration)
+        output.attrs['median_gate_ssim'] = float(best_score)
+        output.attrs['visualization_metric'] = 'median_gate_ssim'
+        best_path = args.output_dir / 'best_visualization.h5'
+        with h5py.File(best_path, 'w') as visual:
+            for name, value in output.attrs.items():
+                visual.attrs[name] = value
+            visual.attrs['iterations'] = int(best_iteration)
+            visual.attrs['best_visualization_iteration'] = int(best_iteration)
+            visual.attrs['median_gate_ssim'] = float(best_score)
+            visual.attrs['visualization_metric'] = 'median_gate_ssim'
+            selected = visual.create_dataset('reconstruction_packed', images.shape, dtype='f4',
+                                             chunks=images.chunks, compression='gzip', compression_opts=1)
+            visual.create_dataset('frame_indices', data=np.arange(study.num_frames))
+            for frame, image in reconstruct(study, device, iterations=best_iteration,
+                                            epsilon=float(study.options.epps)):
+                selected[frame] = image.numpy().reshape(-1)
+        write_selection(args.output_dir / 'selection.json', mode='dynamic', gates=args.gates,
+                        step=best_iteration, median_gate_ssim=best_score,
+                        gate_medians=best_gate_medians, history=history)
 
 
 if __name__ == '__main__':

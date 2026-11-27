@@ -19,7 +19,7 @@ import numpy as np
 
 
 HERE = Path(__file__).resolve().parent
-PHASES = 256
+PHASES = 32
 VOXELS = 256 * 256 * 306
 # The reference thorax contains 210 MBq and 11,681,335 XCAT activity units.
 SOURCE_SCALE_MBQ = 210.0 / 11_681_335
@@ -55,7 +55,7 @@ def configure_smc(template: Path, run_dir: Path, head: int, activity_mbq: float)
 
     # SIMIND's one-based settings use 120 views, a 360-degree orbit, and a
     # 2 cm body-contour gap (42 = -2). Each head observes the full source for
-    # 10/256 seconds per view; the 90-degree head offset is set at index 41.
+    # 10/32 seconds per view; the 90-degree head offset is set at index 41.
     # The normalized source controls Monte Carlo histories, while index 25
     # carries the physical activity and exposure.
     parameters = {
@@ -92,6 +92,8 @@ def make_run(phase: int, head: int, args: argparse.Namespace) -> Path | None:
             metadata = json.loads(manifest.read_text())
             complete = all(path.is_file() and path.stat().st_size == 128 * 128 * 120 * 4 for path in projections)
             matches = (metadata.get("phase") == phase and metadata.get("head") == head
+                       and metadata.get("source_phase_count") == PHASES
+                       and metadata.get("exposure_seconds") == 10 / PHASES
                        and metadata.get("histories_per_view") == args.histories
                        and metadata.get("ranmar_ij") == 67 + 2 * (phase - 1) + head
                        and metadata.get("ranmar_kl") == 67 + 17 * (2 * (phase - 1) + head))
@@ -102,10 +104,10 @@ def make_run(phase: int, head: int, args: argparse.Namespace) -> Path | None:
             return None
         raise FileExistsError(f"Incomplete, invalid, or incompatible SIMIND output in {run_dir}; remove it before retrying")
     xcat = args.xcat_dir
-    activity_path = xcat / f"cardiac256_act_{phase}.bin"
-    attenuation_path = xcat / f"cardiac256_atn_{phase}.bin"
+    activity_path = xcat / f"cardiac32_act_{phase}.bin"
+    attenuation_path = xcat / f"cardiac32_atn_{phase}.bin"
     if not activity_path.is_file() or not attenuation_path.is_file():
-        raise FileNotFoundError(f"phase {phase}: expected {activity_path.name} and {attenuation_path.name} in {xcat}")
+        raise FileNotFoundError(f"phase {phase}: expected 32-phase XCAT files {activity_path.name} and {attenuation_path.name} in {xcat}")
 
     activity = np.fromfile(activity_path, dtype="<f4")
     attenuation_bytes = attenuation_path.stat().st_size
@@ -126,7 +128,7 @@ def make_run(phase: int, head: int, args: argparse.Namespace) -> Path | None:
     target_atn.symlink_to(attenuation_path.resolve())
     configure_smc(args.template, run_dir, head, activity_mbq)
 
-    # Two distinct streams per phase; all 512 phase/head combinations are unique.
+    # Two distinct streams per phase; all 64 phase/head combinations are unique.
     run_id = 2 * (phase - 1) + head
     ij, kl = 67 + run_id, 67 + 17 * run_id
     data_dir = run_dir / "smc_data"
@@ -156,7 +158,8 @@ def make_run(phase: int, head: int, args: argparse.Namespace) -> Path | None:
             if projection.stat().st_size != 128 * 128 * 120 * 4:
                 raise RuntimeError(f"Unexpected SIMIND projection size: {projection}")
         (run_dir / "source_act_1.bin").unlink()
-        result = {"phase": phase, "head": head, "histories_per_view": args.histories,
+        result = {"phase": phase, "head": head, "source_phase_count": PHASES,
+                  "histories_per_view": args.histories,
                   "activity_mbq": activity_mbq, "exposure_seconds": 10 / PHASES,
                   "ranmar_ij": ij, "ranmar_kl": kl,
                   "ranmar_initial_sha256": initial_hash, "command": command}
@@ -167,11 +170,11 @@ def make_run(phase: int, head: int, args: argparse.Namespace) -> Path | None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--xcat-dir", type=Path, default=HERE.parent / "xcat" / "output",
-                        help="directory with cardiac256_{act,atn}_PHASE.bin files")
+                        help="directory with cardiac32_{act,atn}_PHASE.bin files")
     parser.add_argument("--output-dir", type=Path, default=HERE / "runs")
     parser.add_argument("--template", type=Path, default=HERE / "simind_template.smc")
     parser.add_argument("--phase", type=int, action="append",
-                        help="one-based XCAT phase 1–256; repeat to select several (default: all)")
+                        help="one-based XCAT phase 1–32; repeat to select several (default: all)")
     parser.add_argument("--histories", type=int, default=500_000,
                         help="source histories per view (default: 500000)")
     parser.add_argument("--dry-run", action="store_true",
@@ -187,7 +190,7 @@ def parse_args() -> argparse.Namespace:
     args.smc_dir = simind_path / "smc_dir"
     phases = args.phase if args.phase else list(range(1, PHASES + 1))
     if any(phase < 1 or phase > PHASES for phase in phases):
-        parser.error("phase numbers must be in the range 1–256")
+        parser.error("phase numbers must be in the range 1–32")
     if args.histories < 1:
         parser.error("histories must be positive")
     if not args.template.is_file():

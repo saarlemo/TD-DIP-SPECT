@@ -30,33 +30,26 @@ def reconstruct(gates, method, mode):
     run(f'reconstructions/{mode}_{method}.py', study, output, '--gates', gates)
 
 
-def evaluate_results(gates, dip_modes=()):
+def evaluate_results(gates):
     study = DATA / f'{gates}gates' / 'static' / f'gates_{gates}'
-    for mode, steps in (('static', 3000), ('dynamic', 100000)):
+    for mode in ('static', 'dynamic'):
         result = RESULTS / mode / f'gates_{gates}'
-        checkpoint = result / 'td_dip' / f'{mode}_td_dip_step{steps:06d}.pt'
+        osem_visualization = result / 'osem' / 'best_visualization.h5'
+        bsrem_visualization = result / 'bsrem' / 'best_visualization.npy'
+        dip_visualization = result / 'dip' / 'best_visualization.h5'
+        td_dip_visualization = result / 'td_dip' / f'{mode}_td_dip_best_visualization.pt'
         arguments = [
             '--study', study, '--mode', mode,
-            '--osem', result / 'osem', '--bsrem', result / 'bsrem',
-            '--td-dip', checkpoint, '--masks',
+            '--osem', osem_visualization, '--bsrem', bsrem_visualization,
+            '--dip', dip_visualization,
+            '--td-dip', td_dip_visualization, '--masks',
             RESULTS / 'static' / f'gates_{gates}' / 'evaluation' / 'truth_masks.npz',
             '--output', result / 'evaluation',
         ]
-        if mode in dip_modes:
-            arguments.extend(['--dip', result / 'dip' / f'{mode}_dip.h5'])
         run('plotting/evaluate.py', *arguments)
 
 
-def plot_results(gates, kind):
+def plot_slices(gates):
     for mode in ('static', 'dynamic'):
         evaluations = [RESULTS / mode / f'gates_{n}' / 'evaluation' for n in gates]
-        run('plotting/plot.py', *evaluations, '--output', RESULTS / 'figures' / mode,
-            '--kind', kind)
-
-
-def plot_slices(gates):
-    plot_results(gates, 'slices')
-
-
-def plot_metrics(gates):
-    plot_results(gates, 'metrics')
+        run('plotting/plot.py', *evaluations, '--output', RESULTS / 'figures' / mode)

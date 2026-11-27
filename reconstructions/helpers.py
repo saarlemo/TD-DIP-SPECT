@@ -15,8 +15,10 @@ import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 from scipy.io import loadmat
-from scipy.ndimage import zoom
+from scipy.ndimage import map_coordinates, zoom
 from scipy.sparse import csr_matrix
+
+GATE_COUNTS = (8, 16, 32)
 
 
 def _volume(path):
@@ -55,25 +57,55 @@ def _configure_multiresolution(options, manifest, roi_shape, scale):
     full_shape = np.array([options.Nx, options.Ny, options.Nz], dtype=int)
     full_fov = np.array([options.FOVa_x, options.FOVa_y, options.axial_fov])
     spacing = full_fov / full_shape
+    roi_shape = np.asarray(roi_shape, dtype=np.int64)
+    roi_fov = roi_shape * spacing
+    coarse_shape = np.maximum(1, np.rint(roi_shape * scale).astype(np.int64))
+    coarse_spacing = roi_fov / coarse_shape
+    coarse_cells_per_side = np.ceil(
+        np.maximum(full_fov - roi_fov, 0) / (2 * coarse_spacing)
+    ).astype(np.int64)
+    fine_extension_per_side = np.ceil(coarse_cells_per_side / scale).astype(np.int64)
     requested = np.asarray(manifest['heart_center_mm'])
     center = np.floor(requested / (spacing / scale) + .5) * (spacing / scale)
-    options.Nx, options.Ny, options.Nz = roi_shape
-    options.FOVa_x, options.FOVa_y, options.axial_fov = np.asarray(roi_shape) * spacing
+    options.Nx, options.Ny, options.Nz = roi_shape.tolist()
+    options.FOVa_x, options.FOVa_y, options.axial_fov = roi_fov
     options.oOffsetX, options.oOffsetY, options.oOffsetZ = center
     options.useEFOV = options.useMultiResolutionVolumes = True
+    options.transaxialEFOV = options.axialEFOV = True
     options.multiResolutionScale = scale
     options.eFOVSize = full_fov
     options.eFOVShift = -center
     options.veritonHeartRequestedMm = requested
     options.veritonHeartCenterMm = center
     options.veritonFullCenterMm = np.zeros(3)
-    CTEFOVCorrection(options)
+    transaxial_length = (fine_extension_per_side[0] + 1e-5) / roi_shape[0]
+    axial_length = (fine_extension_per_side[2] + 1e-5) / roi_shape[2]
+    CTEFOVCorrection(options, eFOVLengthTransaxial=transaxial_length,
+                     eFOVLengthAxial=axial_length)
+
+
+def _crop_attenuation_to_roi(attenuation, source_spacing, roi_shape, roi_center):
+    """Sample full-FOV attenuation on the physical grid of the fine ROI."""
+    shape = np.asarray(roi_shape, dtype=np.int64)
+    spacing = np.asarray(source_spacing, dtype=np.float64)
+    source_origin = -np.asarray(attenuation.shape, dtype=np.float64) * spacing / 2
+    roi_origin = np.asarray(roi_center, dtype=np.float64) - shape * spacing / 2
+    axes = [
+        (roi_origin[axis] - source_origin[axis]) / spacing[axis]
+        + np.arange(shape[axis], dtype=np.float64)
+        for axis in range(3)
+    ]
+    coordinates = np.asarray(np.meshgrid(*axes, indexing='ij'), dtype=np.float64)
+    return map_coordinates(attenuation, coordinates, order=1, mode='constant',
+                           cval=0, prefilter=False).astype(np.float32)
 
 
 class XCATStudy:
     def __init__(self, mode, input_dir, output_dir, gates, device, subsets,
                  rays=13, roi_shape=(32, 32, 32), coarse_scale=.25, cache_size=8,
                  full_fov=False, gain_override=None):
+        if int(gates) not in GATE_COUNTS:
+            raise ValueError(f'Gate count must be one of {GATE_COUNTS}')
         self.cache_size = cache_size
         self.full_fov = full_fov
         self.mode = mode
@@ -174,10 +206,12 @@ class XCATStudy:
         o.iR = float(m['intrinsic_fwhm_mm'])
         o.colFxy = o.colFz = np.inf
         mu = _volume(self.static_root / m['attenuation_files'][gate])
-        shape = np.asarray(m['reconstruction_shape_xyz'])
-        if tuple(mu.shape) != tuple(shape):
-            mu = zoom(mu, shape / mu.shape, order=1, mode='nearest', prefilter=False, grid_mode=True)
-        o.vaimennus = np.asfortranarray(mu, dtype=np.float32)
+        reconstruction_shape = np.asarray(m['reconstruction_shape_xyz'])
+        full_fov = np.asarray(m['image_shape_xyz']) * np.asarray(m['voxel_size_mm'])
+        source_spacing = full_fov / reconstruction_shape
+        if tuple(mu.shape) != tuple(reconstruction_shape):
+            mu = zoom(mu, reconstruction_shape / mu.shape, order=1, mode='nearest',
+                      prefilter=False, grid_mode=True)
         o.attenuation_correction = o.CT_attenuation = o.attIncm = True
         o.scatter_correction = o.normalization_correction = False
         o.corrections_during_reconstruction = True
@@ -195,6 +229,9 @@ class XCATStudy:
         o.verbose = 0
         if not self.full_fov:
             _configure_multiresolution(o, m, self.roi_shape, self.coarse_scale)
+            roi_center = [o.oOffsetX, o.oOffsetY, o.oOffsetZ]
+            mu = _crop_attenuation_to_roi(mu, source_spacing, self.roi_shape, roi_center)
+        o.vaimennus = np.asfortranarray(mu, dtype=np.float32)
         o.addProjector()
         o.initProj()
         self._projectors[gate] = o
@@ -744,7 +781,7 @@ def setup_workers(device_name):
 
 
 def frame_update_budgets(frame_count, total_frame_evaluations, seed=67):
-    """Distribute the shared TD-DIP frame evaluations evenly over frames."""
+    """Distribute a shared update budget evenly over independent frames."""
     if frame_count < 1 or total_frame_evaluations < frame_count:
         raise ValueError('Each frame needs at least one frame evaluation')
     updates, remainder = divmod(total_frame_evaluations, frame_count)
@@ -765,9 +802,10 @@ def _poisson_kl(expected, observed, mask):
     return loss, gradient
 
 
-def train_frame(study, frame, geometry, settings, *, device, steps, batch_size,
-                learning_rate, decay_steps, decay_factor, epsilon, seed,
-                mixed_precision, log_interval):
+def train_frame(study, frame, geometry, settings, *, device, steps,
+                learning_rate, epsilon, seed,
+                mixed_precision, log_interval, selection_steps=(),
+                selection_callback=None):
     """Fit one decoder and return its image, initial KL, and saved-image KL."""
     frame_seed = int(seed + frame)
     cuda_devices = [device.index or 0] if device.type == 'cuda' else []
@@ -781,9 +819,6 @@ def train_frame(study, frame, geometry, settings, *, device, steps, batch_size,
     prompt, scatter, mask = study.frame_data(frame, 0, device)
     first_kl = None
     for step in range(steps):
-        equivalent_step = step * study.num_frames // min(batch_size, study.num_frames)
-        for group in optimizer.param_groups:
-            group['lr'] = learning_rate * decay_factor ** (equivalent_step // decay_steps)
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
                             enabled=mixed_precision):
@@ -794,6 +829,11 @@ def train_frame(study, frame, geometry, settings, *, device, steps, batch_size,
             image_gradient = study.backward(frame, 0, gradient).reshape_as(image)
         image.backward(image_gradient)
         optimizer.step()
+        completed = step + 1
+        if selection_callback is not None and completed in selection_steps:
+            with torch.inference_mode():
+                candidate = model(noise).float().reshape(-1).cpu().numpy()
+            selection_callback(frame, completed, candidate)
         if first_kl is None:
             first_kl = float(loss)
         if log_interval and (step + 1) % log_interval == 0:
@@ -810,7 +850,7 @@ def train_frame(study, frame, geometry, settings, *, device, steps, batch_size,
 
 def merge_ranked_dip_outputs(output_path, metrics_path, shard_paths,
                              metrics_shard_paths, frame_start, frame_stop,
-                             total_frame_evaluations, metric_fields):
+                             total_optimizer_iterations, metric_fields):
     """Merge rank-local DIP files into frame order, checking complete coverage."""
     frame_count = frame_stop - frame_start
     rows = []
@@ -831,7 +871,7 @@ def merge_ranked_dip_outputs(output_path, metrics_path, shard_paths,
                 result.attrs[name] = value
             result.attrs['frame_start'] = int(frame_start)
             result.attrs['frame_count'] = int(frame_count)
-            result.attrs['total_frame_evaluations'] = int(total_frame_evaluations)
+            result.attrs['total_optimizer_iterations'] = int(total_optimizer_iterations)
             result.create_dataset('frame_indices', data=np.arange(frame_start, frame_stop))
             for path in shard_paths:
                 with h5py.File(path, 'r') as shard:

@@ -15,10 +15,10 @@ import numpy as np
 from scipy.io import savemat
 from scipy.sparse import coo_matrix, csr_matrix
 
-from helpers import open_study
+from helpers import GATE_COUNTS, open_study
 
 HERE = Path(__file__).resolve().parent
-PHASES, POSITIONS, CYCLES = 256, 120, 10
+PHASES, POSITIONS, CYCLES = 32, 120, 10
 DETECTOR_SHAPE = (128, 128)
 NATIVE_SHAPE = (256, 256, 306)
 VOXEL_MM = 2.46
@@ -40,6 +40,13 @@ def phase_projection(simind_dir, phase, window):
     heads, radii = [], []
     for head in (0, 1):
         folder = simind_dir / f'phase_{phase:03d}' / f'head_{head}'
+        if window == 1:
+            metadata = json.loads((folder / 'run.json').read_text())
+            if (metadata.get('source_phase_count') != PHASES
+                    or metadata.get('exposure_seconds') != 10 / PHASES):
+                raise ValueError(
+                    f'{folder} is not a compatible {PHASES}-phase SIMIND run; regenerate it before preparation'
+                )
         heads.append(np.fromfile(folder / f'projection_tot_w{window}.a00', dtype='<f4')
                      .reshape(*DETECTOR_SHAPE, POSITIONS, order='F'))
         if window == 1:
@@ -76,7 +83,8 @@ def save_sparse(path, matrix):
 def static_manifest(gates, seed):
     angles = np.stack((np.arange(POSITIONS) * 3,
                        (np.arange(POSITIONS) * 3 + 90) % 360), axis=1).ravel()
-    return dict(gate_count=gates, voxel_size_mm=[VOXEL_MM] * 3,
+    return dict(gate_count=gates, source_phase_count=PHASES,
+        voxel_size_mm=[VOXEL_MM] * 3,
         image_shape_xyz=list(NATIVE_SHAPE), reconstruction_shape_xyz=[128, 128, 156],
         physical_detector_axial_mm=500, physical_detector_transverse_mm=400,
         detector_pixel_mm=[3.5, 3.5], detector_shape=list(DETECTOR_SHAPE),
@@ -124,8 +132,8 @@ def prepare_gates(simind_dir, xcat_dir, static_dir, dynamic_dir, gates, seed):
                 if dynamic_dir is not None:
                     split_rng = np.random.default_rng(np.random.SeedSequence([seed, phase, window, 10]))
                     split_phase(sampled, split_rng, *fragments[name])
-            activity += native_volume(xcat_dir / f'cardiac256_act_{phase}.bin') * (SOURCE_SCALE_MBQ / phases_per_gate)
-            attenuation += native_volume(xcat_dir / f'cardiac256_atn_{phase}.bin') / (0.246 * phases_per_gate)
+            activity += native_volume(xcat_dir / f'cardiac32_act_{phase}.bin') * (SOURCE_SCALE_MBQ / phases_per_gate)
+            attenuation += native_volume(xcat_dir / f'cardiac32_atn_{phase}.bin') / (0.246 * phases_per_gate)
         savemat(static_dir / f'gate_{gate + 1:03d}.mat',
                 {**counts, 'radius_to_crystal_mm': radius.astype(np.float32)},
                 do_compression=True)
@@ -178,6 +186,7 @@ def prepare_dynamic(directory, static_dir, static, radii, matrices, seed):
         save_sparse(directory / f'{name}.npz', interleave_gates(matrices[name]))
     relative = lambda path: os.path.relpath(path, directory)
     manifest = dict(format='xcat_dynamic_sparse_csr_v1', gate_count=gates,
+        source_phase_count=PHASES,
         interval_count=int(index.size), acquisition_wall_time_s=1200,
         exposure_s_per_interval_head=1 / gates,
         source_static_study=relative(static_dir / 'study.json'),
@@ -271,14 +280,16 @@ def prepared_exists(output, gates, seed):
         for count in {8, gates}:
             directory = static / f'gates_{count}'
             manifest = json.loads((directory / 'study.json').read_text())
-            if manifest['gate_count'] != count or manifest['poisson_seed'] != seed:
+            if (manifest['gate_count'] != count or manifest.get('source_phase_count') != PHASES
+                    or manifest['poisson_seed'] != seed):
                 return False
             for key in ('projection_files', 'truth_files', 'attenuation_files'):
                 if len(manifest[key]) != count or not all((directory / name).is_file() for name in manifest[key]):
                     return False
         directory = output / 'dynamic' / f'gates_{gates}'
         manifest = json.loads((directory / 'study.json').read_text())
-        if manifest['gate_count'] != gates or manifest['allocation_seed'] != seed:
+        if (manifest['gate_count'] != gates or manifest.get('source_phase_count') != PHASES
+                or manifest['allocation_seed'] != seed):
             return False
         files = [manifest['timeline_geometry_file'], *manifest['count_files'].values()]
         calibration = json.loads((static / 'gain_calibration.json').read_text())
@@ -291,7 +302,7 @@ def prepared_exists(output, gates, seed):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--gates', type=int, choices=(8, 16, 32, 64, 128, 256), default=8)
+    parser.add_argument('--gates', type=int, choices=GATE_COUNTS, default=8)
     parser.add_argument('--simind-dir', type=Path, default=HERE.parent / 'simind' / 'runs')
     parser.add_argument('--xcat-dir', type=Path, default=HERE.parent / 'xcat' / 'output')
     parser.add_argument('--output-dir', type=Path,

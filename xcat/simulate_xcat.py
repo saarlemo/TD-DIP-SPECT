@@ -27,7 +27,7 @@ ASSETS = (
     "ap_curve.dat",
     "tumor_curve.dat",
 )
-PHASES = 256
+PHASES = 32
 
 
 def set_parameter(text: str, key: str, value: str) -> str:
@@ -42,7 +42,7 @@ def set_parameter(text: str, key: str, value: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=HERE / "output", help="Directory for generated .bin files")
-    parser.add_argument("--first-phase", type=int, default=1, help="First phase to generate (1-256)")
+    parser.add_argument("--first-phase", type=int, default=1, help="First phase to generate (1-32)")
     parser.add_argument("--phase-count", type=int, default=PHASES, help="Number of consecutive phases")
     args = parser.parse_args()
 
@@ -56,7 +56,7 @@ def main() -> None:
     if not TEMPLATE.is_file():
         parser.error(f"Parameter template not found: {TEMPLATE}")
     if args.phase_count < 1 or args.first_phase < 1 or args.first_phase + args.phase_count - 1 > PHASES:
-        parser.error("Requested phase range must be within 1..256 and contain at least one phase")
+        parser.error("Requested phase range must be within 1..32 and contain at least one phase")
     missing = [name for name in ASSETS if not (assets / name).is_file()]
     if missing:
         parser.error(f"Missing XCAT asset files in {assets}: {', '.join(missing)}")
@@ -64,7 +64,7 @@ def main() -> None:
     output.mkdir(parents=True, exist_ok=True)
     template = TEMPLATE.read_text()
     for phase in range(args.first_phase, args.first_phase + args.phase_count):
-        destinations = [output / f"cardiac256_{kind}_{phase}.bin" for kind in ("act", "atn")]
+        destinations = [output / f"cardiac32_{kind}_{phase}.bin" for kind in ("act", "atn")]
         existing = [path for path in destinations if path.exists()]
         expected_bytes = 256 * 256 * 306 * 4
         if len(existing) == 2 and all(path.is_file() and path.stat().st_size == expected_bytes for path in destinations):
@@ -80,8 +80,8 @@ def main() -> None:
             for name in ASSETS:
                 (workdir / name).symlink_to(assets / name)
             (workdir / "phase.par").write_text(phase_text)
-            subprocess.run([str(executable), "phase.par", "cardiac256"], cwd=workdir, check=True)
-            generated = [workdir / f"cardiac256_{kind}_1.bin" for kind in ("act", "atn")]
+            subprocess.run([str(executable), "phase.par", "cardiac32"], cwd=workdir, check=True)
+            generated = [workdir / f"cardiac32_{kind}_1.bin" for kind in ("act", "atn")]
             absent = [path.name for path in generated if not path.is_file()]
             if absent:
                 raise RuntimeError(f"XCAT did not create expected output(s): {', '.join(absent)}")
